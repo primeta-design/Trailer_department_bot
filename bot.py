@@ -17,6 +17,7 @@ log = logging.getLogger("fleetbot")
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 GROUP_ID = int(os.environ["GROUP_ID"])
 SHEET_ID = os.environ["SPREADSHEET_ID"]
+REPORT_GROUP_ID = int(os.getenv("REPORT_GROUP_ID", "0"))   # report'lar nusxasi tushadigan guruh (ixtiyoriy)
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))   # /lot_trailers, /dropped va driver guruhlaridagi buyruqlar faqat shu akkaunt uchun
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")   # guruh nomidan truck/driver o'qish uchun (ixtiyoriy)
 AI_MODEL = os.getenv("AI_MODEL", "claude-haiku-5-5")
@@ -398,6 +399,10 @@ async def parse_title(title):
 async def send_and_pin(bot, chat_id, text):
     m = await bot.send_message(chat_id, text)
     try:
+        await bot.unpin_all_chat_messages(chat_id)     # eski pinlar olib tashlanadi
+    except Exception:
+        log.warning("Could not unpin old messages in chat %s", chat_id)
+    try:
         await bot.pin_chat_message(chat_id, m.message_id, disable_notification=True)
     except Exception:
         log.warning("Could not pin in chat %s", chat_id)
@@ -419,9 +424,35 @@ async def trailers_of_truck(truck):
     found = await asyncio.to_thread(lookup_sync, "truck", truck)
     return list(dict.fromkeys(tr for tr, _, _ in found))
 
+async def send_report(bot, chat_id, text):
+    """Report driver guruhiga va (bo'lsa) report guruhiga yuboriladi. Forward emas, botning o'z xabari."""
+    await bot.send_message(chat_id, text)
+    if REPORT_GROUP_ID:
+        try:
+            await bot.send_message(REPORT_GROUP_ID, text)
+        except Exception:
+            log.exception("Could not send report to report group")
+            await bot.send_message(chat_id, "⚠️ I could not send the report to the report group.")
+
+async def on_report_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Report guruhida owner botning report'iga reply qilib yangi matn yozsa, bot report'ni tahrirlaydi."""
+    msg, chat, user = update.effective_message, update.effective_chat, update.effective_user
+    if not REPORT_GROUP_ID or not msg or not chat or chat.id != REPORT_GROUP_ID:
+        return
+    if not user or user.id != OWNER_ID:
+        return
+    prev = msg.reply_to_message
+    if not prev or not prev.from_user or prev.from_user.id != context.bot.id or not msg.text:
+        return
+    try:
+        await context.bot.edit_message_text(msg.text, chat_id=chat.id, message_id=prev.message_id)
+        await msg.delete()
+    except Exception:
+        log.exception("report edit failed")
+
 async def on_driver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg, chat, user = update.effective_message, update.effective_chat, update.effective_user
-    if not msg or not chat or chat.id == GROUP_ID or chat.type not in ("group", "supergroup"):
+    if not msg or not chat or chat.id == GROUP_ID or chat.id == REPORT_GROUP_ID or chat.type not in ("group", "supergroup"):
         return
     # Driver guruhlarida faqat OWNER buyruq bera oladi; boshqalarga javob ham berilmaydi
     if not user or user.id != OWNER_ID:
@@ -453,7 +484,7 @@ async def on_driver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if date and not valid_date(date):
                 await msg.reply_text("The date looks wrong. Please use the format: date : 11/08/2026")
                 return
-            await context.bot.send_message(chat.id, driver_report(unit, truck, driver, "Pick up", loc, date))
+            await send_report(context.bot, chat.id, driver_report(unit, truck, driver, "Pick up", loc, date))
             await send_and_pin(context.bot, chat.id, f"#Truck {truck}\n#Trailer {unit}")
             await cleanup_template(context, msg)
             return
@@ -477,7 +508,7 @@ async def on_driver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "Please write: /trailer unit <number>\ndropped off location : <address>")
                     return
                 unit = trailers[0]
-            await context.bot.send_message(chat.id, driver_report(unit, truck, driver, "Drop off", loc, date))
+            await send_report(context.bot, chat.id, driver_report(unit, truck, driver, "Drop off", loc, date))
             await send_and_pin(context.bot, chat.id, f"#Truck {truck}\nBobtail")
             await cleanup_template(context, msg)
             return
@@ -491,7 +522,7 @@ async def on_driver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Botni owner'dan boshqa odam yangi guruhga qo'shsa, bot o'sha guruhdan chiqib ketadi."""
     cm = update.my_chat_member
-    if not cm or cm.chat.id == GROUP_ID or cm.chat.type not in ("group", "supergroup"):
+    if not cm or cm.chat.id in (GROUP_ID, REPORT_GROUP_ID) or cm.chat.type not in ("group", "supergroup"):
         return
     added = cm.old_chat_member.status in ("left", "kicked") and cm.new_chat_member.status in ("member", "administrator")
     if added and cm.from_user.id != OWNER_ID:
@@ -532,6 +563,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(LOOKUP_START), on_lookup))
     app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, on_lookup_reply))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(DRV_START), on_driver_cmd), group=1)
+    app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, on_report_edit), group=2)
     app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER), group=1)
     app.job_queue.run_daily(lot_job, time=dtime(LOT_HOUR, 0, tzinfo=TZ))
     app.job_queue.run_daily(dropped_job, time=dtime(DROPPED_HOUR, 0, tzinfo=TZ))
