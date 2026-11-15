@@ -233,10 +233,6 @@ async def on_lookup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(query) > 40:
         await msg.reply_text(f"Please enter a unit number, for example:\n/{kind}_unit : 4558")
         return
-    if f"@{context.bot.username}".lower() not in (msg.text or "").lower():
-        await msg.reply_text(
-            f"Please write it in this format:\n/{kind}_unit : 4558\n@{context.bot.username}")
-        return
     try:
         found = await asyncio.to_thread(lookup_sync, kind, query)
     except Exception:
