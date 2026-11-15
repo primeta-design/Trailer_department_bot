@@ -194,16 +194,23 @@ def lookup_sync(kind, query):
             found.append((trailer, truck, "Company rented"))
     return found
 
-LOOKUP_RE = re.compile(r"^/(truck|trailer)[ _]?unit(?:@\w+)?\s*:?\s*(.{1,40})$", re.I)
+LOOKUP_START = re.compile(r"^/(truck|trailer)[ _]?unit", re.I)
+LOOKUP_RE = re.compile(r"^/(truck|trailer)[ _]?unit\s*:?\s*(.*)$", re.I)
 
 async def on_lookup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg or update.effective_chat.id != GROUP_ID:
         return
-    m = LOOKUP_RE.match((msg.text or "").strip())
+    # @bot_nomi (buyruq oxirida yoki alohida qatorda) olib tashlanadi, qatorlar birlashtiriladi
+    text = re.sub(r"@\w+", " ", msg.text or "")
+    text = " ".join(text.split())
+    m = LOOKUP_RE.match(text)
     if not m:
         return
     kind, query = m.group(1).lower(), m.group(2).strip()
+    if not query or len(query) > 40:
+        await msg.reply_text(f"Please enter a unit number, for example:\n/{kind}_unit : 4558")
+        return
     try:
         found = await asyncio.to_thread(lookup_sync, kind, query)
     except Exception:
@@ -233,7 +240,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("lot_trailers", cmd_lot))
     app.add_handler(CommandHandler("dropped", cmd_dropped))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(LOOKUP_RE), on_lookup))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(LOOKUP_START), on_lookup))
     app.job_queue.run_daily(lot_job, time=dtime(LOT_HOUR, 0, tzinfo=TZ))
     app.job_queue.run_daily(dropped_job, time=dtime(DROPPED_HOUR, 0, tzinfo=TZ))
     app.run_polling()
