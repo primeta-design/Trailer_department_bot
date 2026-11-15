@@ -109,7 +109,7 @@ async def cmd_lot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
         return
     if not update.effective_user or update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("This command is only available to the owner.")
+        await update.message.reply_text("This command is only available to the admin.")
         return
     try:
         await send_lot(context.bot, empty_note="No late trailers.")
@@ -197,7 +197,7 @@ async def cmd_dropped(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
         return
     if not update.effective_user or update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("This command is only available to the owner.")
+        await update.message.reply_text("This command is only available to the admin.")
         return
     try:
         await send_dropped(context.bot, empty_note="No dropped trailers are due.")
@@ -457,7 +457,7 @@ async def on_driver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     # Driver guruhlarida faqat OWNER buyruq bera oladi
     if not user or user.id != OWNER_ID:
-        await msg.reply_text("This command is only available to the owner.")
+        await msg.reply_text("This command is only available to the admin.")
         return
     text = " ".join(re.sub(r"@\w+", " ", msg.text or "").split())
     if re.fullmatch(r"/trailer", text, re.I):
