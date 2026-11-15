@@ -1,11 +1,11 @@
 import os, re, json, base64, asyncio, logging
-from datetime import time as dtime
+from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 import gspread
 from google.oauth2.service_account import Credentials
 from telegram import Update, BotCommand, BotCommandScopeChatMember, ForceReply, ReplyKeyboardRemove
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, ChatMemberHandler, CommandHandler, MessageHandler, ContextTypes, filters
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)   # token URL loglarga tushmasin
@@ -290,6 +290,124 @@ async def on_lookup_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Truck unit: {tk}\nTrailer unit: {tr}\n({src})" for tr, tk, src in found), reply_markup=ReplyKeyboardRemove(selective=True))
 
 
+# ---------- Drivers guruhlari: report / drop off / update chat ----------
+TITLE_RE = re.compile(r"#\s*([A-Za-z0-9-]+)(?:\s+(.+))?")          # "Rawdeal #721 Driver Name"
+DRV_START = re.compile(r"^/(trailer|update[ _]?chat)", re.I)
+PICK_RE = re.compile(r"^/trailer[ _]?unit\s*:?\s*(?P<unit>[A-Za-z0-9-]+)\s+pick(?:ed)?[ -]?up\s+location\s*:?\s*(?P<loc>.+)$", re.I)
+DROP_RE = re.compile(r"^/trailer(?:[ _]?unit\s*:?\s*(?P<unit>[A-Za-z0-9-]+))?\s*drop(?:ped)?[ -]?off\s+location\s*:?\s*(?P<loc>.+)$", re.I)
+UPDATE_RE = re.compile(r"^/update[ _]?chat$", re.I)
+LINE = "====================="
+
+DRV_USAGE = (
+    "Usage:\n"
+    "/trailer unit 5624473\n"
+    "picked up location : 10560 C F Hawn Fwy, Dallas, TX 75217, USA\n\n"
+    "/trailer drop off location : 10560 C F Hawn Fwy, Dallas, TX 75217\n\n"
+    "/update chat"
+)
+
+async def is_staff(bot, user_id):
+    """Owner yoki trailers guruhining a'zosi."""
+    if user_id == OWNER_ID:
+        return True
+    try:
+        m = await bot.get_chat_member(GROUP_ID, user_id)
+    except Exception:
+        return False
+    if m.status == "restricted":
+        return bool(getattr(m, "is_member", False))
+    return m.status in ("creator", "administrator", "member")
+
+async def send_and_pin(bot, chat_id, text):
+    m = await bot.send_message(chat_id, text)
+    try:
+        await bot.pin_chat_message(chat_id, m.message_id, disable_notification=True)
+    except Exception:
+        log.warning("Could not pin in chat %s", chat_id)
+        await bot.send_message(chat_id, "⚠️ I could not pin the message. Please make me an admin with the 'Pin messages' permission.")
+
+def driver_report(unit, truck, driver, kind, loc):
+    d = datetime.now(TZ)
+    return (
+        f"Trailer# {unit}\n{LINE}\n"
+        f"Truck unit: {truck}\nDriver name: {driver}\n{LINE}\n"
+        f" Status :  ///\n\n"
+        f"{kind} location :\n{loc}\n{LINE}\n"
+        f"Date:{d.month}/{d.day}/{d.year}"
+    )
+
+async def trailers_of_truck(truck):
+    found = await asyncio.to_thread(lookup_sync, "truck", truck)
+    return list(dict.fromkeys(tr for tr, _, _ in found))
+
+async def on_driver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg, chat, user = update.effective_message, update.effective_chat, update.effective_user
+    if not msg or not chat or chat.id == GROUP_ID or chat.type not in ("group", "supergroup"):
+        return
+    if not user or not await is_staff(context.bot, user.id):
+        await msg.reply_text("This command is only available to the team.")
+        return
+    t = TITLE_RE.search(chat.title or "")
+    if not t:
+        await msg.reply_text("Group name must look like: Rawdeal #721 Driver Name")
+        return
+    truck = t.group(1)
+    driver = (t.group(2) or "").strip() or "N/A"
+    text = " ".join(re.sub(r"@\w+", " ", msg.text or "").split())
+
+    try:
+        if UPDATE_RE.match(text):
+            trailers = await trailers_of_truck(truck)
+            if trailers:
+                body = f"#Truck {truck}\n" + "\n".join(f"#Trailer {tr}" for tr in trailers)
+            else:
+                body = f"#Truck {truck}\nDoing PO load"
+            await send_and_pin(context.bot, chat.id, body)
+            return
+
+        m = PICK_RE.match(text)
+        if m:
+            unit, loc = m.group("unit"), m.group("loc").strip()[:200]
+            await context.bot.send_message(chat.id, driver_report(unit, truck, driver, "Pick up", loc))
+            await send_and_pin(context.bot, chat.id, f"#Truck {truck}\n#Trailer {unit}")
+            return
+
+        m = DROP_RE.match(text)
+        if m:
+            unit, loc = m.group("unit"), m.group("loc").strip()[:200]
+            if not unit:
+                trailers = await trailers_of_truck(truck)
+                if not trailers:
+                    await msg.reply_text(
+                        f"No trailer found for truck {truck} in the sheet. Please write:\n"
+                        "/trailer unit 5624473\ndropped off location : <address>")
+                    return
+                if len(trailers) > 1:
+                    await msg.reply_text(
+                        f"More than one trailer found for truck {truck}: {', '.join(trailers)}.\n"
+                        "Please write: /trailer unit <number>\ndropped off location : <address>")
+                    return
+                unit = trailers[0]
+            await context.bot.send_message(chat.id, driver_report(unit, truck, driver, "Drop off", loc))
+            return
+    except Exception:
+        log.exception("driver command failed")
+        await msg.reply_text("⚠️ Something went wrong, please try again.")
+        return
+
+    await msg.reply_text(DRV_USAGE)
+
+async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Botni team'ga kirmaydigan odam yangi guruhga qo'shsa, bot o'sha guruhdan chiqib ketadi."""
+    cm = update.my_chat_member
+    if not cm or cm.chat.id == GROUP_ID or cm.chat.type not in ("group", "supergroup"):
+        return
+    added = cm.old_chat_member.status in ("left", "kicked") and cm.new_chat_member.status in ("member", "administrator")
+    if added and not await is_staff(context.bot, cm.from_user.id):
+        log.warning("Added to chat %s by a non-team user, leaving", cm.chat.id)
+        await context.bot.leave_chat(cm.chat.id)
+
+
 async def post_init(app: Application):
     # "/" bosilganda chiqadigan menyu: hamma uchun
     await app.bot.set_my_commands([
@@ -314,6 +432,8 @@ def main():
     app.add_handler(CommandHandler("dropped", cmd_dropped))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(LOOKUP_START), on_lookup))
     app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, on_lookup_reply))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(DRV_START), on_driver_cmd), group=1)
+    app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER), group=1)
     app.job_queue.run_daily(lot_job, time=dtime(LOT_HOUR, 0, tzinfo=TZ))
     app.job_queue.run_daily(dropped_job, time=dtime(DROPPED_HOUR, 0, tzinfo=TZ))
     app.run_polling()
