@@ -207,6 +207,61 @@ async def cmd_dropped(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Sheet could not be read.")
 
 
+# ---------- FULL LIST: parkingdagi hamma dropped trailer (faqat owner, /full_trailers_atparking) ----------
+def _blank(v):
+    return (not v) or v.strip().lower() in ("n/a", "na", "-")
+
+def full_parking_items():
+    items = []
+    for r in read_block(TAB_DROP):                 # B ustun bo'sh qatorgacha, rangga qaramaydi
+        items.append((not _blank(col(r, "Q")), r))
+    items.sort(key=lambda x: x[0])                 # avval unassigned, keyin assigned (sheet tartibi saqlanadi)
+    return items
+
+def full_item_text(n, assigned, r):
+    lines = [
+        f"{n}. Trailer unit: {col(r,'B')}",
+        f"Truck unit: {col(r,'G')}",
+        f"Dropped date: {col(r,'K')}",
+        f"Paid until: {col(r,'O')}",
+        f"Location: {col(r,'S')}",
+        f"Assigned truck unit : {col(r,'Q') if assigned else 'unassigned'}",
+    ]
+    disp = col(r, "I").lstrip("@").strip()      # I = DISPATCH ustuni
+    if not _blank(disp):
+        lines.append(f"Dispatcher : {disp}")
+    return "\n".join(lines)
+
+async def send_full(bot, empty_note=None):
+    items = await asyncio.to_thread(full_parking_items)
+    if not items:
+        if empty_note:
+            await bot.send_message(GROUP_ID, empty_note)
+        return
+    blocks = [full_item_text(n, a, r) for n, (a, r) in enumerate(items, 1)]
+    chunks, cur = [], "The Trailers at the parking:\n"
+    for b in blocks:                               # xabar 4000 belgidan oshsa, trailer o'rtasida kesmasdan bo'ladi
+        if len(cur) + len(b) + 2 > 4000:
+            chunks.append(cur.rstrip())
+            cur = ""
+        cur += ("\n" if cur else "") + b + "\n"
+    chunks.append(cur.rstrip())
+    for c in chunks:
+        await bot.send_message(GROUP_ID, c)
+
+async def cmd_full(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ID:
+        return
+    if not update.effective_user or update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("This command is only available to the admin.")
+        return
+    try:
+        await send_full(context.bot, empty_note="No trailers at the parking.")
+    except Exception:
+        log.exception("full list cmd failed")
+        await update.message.reply_text("⚠️ Sheet could not be read.")
+
+
 # ---------- Truck <-> Trailer qidiruv (faqat trailers guruhida, team a'zolari ham ishlata oladi) ----------
 def toks(s):
     t = re.findall(r"[A-Za-z0-9]+", (s or "").lower())
@@ -653,6 +708,7 @@ async def post_init(app: Application):
             await bot.set_my_commands([
                 BotCommand("lot_trailers", "Late LOT trailers list"),
                 BotCommand("dropped", "Dropped trailers due list"),
+                BotCommand("full_trailers_atparking", "Full list of trailers at parking"),
                 BotCommand("truck_unit", "Find trailer by truck unit"),
                 BotCommand("trailer_unit", "Find truck by trailer unit"),
             ], scope=BotCommandScopeChatMember(chat_id=GROUP_ID, user_id=OWNER_ID))
@@ -663,6 +719,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("lot_trailers", cmd_lot))
     app.add_handler(CommandHandler("dropped", cmd_dropped))
+    app.add_handler(CommandHandler("full_trailers_atparking", cmd_full))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(LOOKUP_START), on_lookup))
     app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, on_lookup_reply))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(DRV_START), on_driver_cmd), group=1)
