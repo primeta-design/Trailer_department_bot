@@ -7,7 +7,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from telegram import (Update, BotCommand, BotCommandScopeChatMember, BotCommandScopeChat,
                       BotCommandScopeAllGroupChats, ForceReply, ReplyKeyboardRemove)
-from telegram.ext import Application, ChatMemberHandler, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)   # token URL loglarga tushmasin
@@ -520,17 +520,6 @@ async def on_driver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await msg.reply_text("I could not read that. Send /trailer to get the template.")
 
-async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Botni owner'dan boshqa odam yangi guruhga qo'shsa, bot o'sha guruhdan chiqib ketadi."""
-    cm = update.my_chat_member
-    if not cm or cm.chat.id in (GROUP_ID, REPORT_GROUP_ID) or cm.chat.type not in ("group", "supergroup"):
-        return
-    added = cm.old_chat_member.status in ("left", "kicked") and cm.new_chat_member.status in ("member", "administrator")
-    if added and cm.from_user.id != OWNER_ID:
-        log.warning("Added to chat %s by a non-owner, leaving", cm.chat.id)
-        await context.bot.leave_chat(cm.chat.id)
-
-
 async def post_init(app: Application):
     bot = app.bot
     try:
@@ -565,7 +554,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, on_lookup_reply))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(DRV_START), on_driver_cmd), group=1)
     app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, on_report_edit), group=2)
-    app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER), group=1)
     app.job_queue.run_daily(lot_job, time=dtime(LOT_HOUR, 0, tzinfo=TZ))
     app.job_queue.run_daily(dropped_job, time=dtime(DROPPED_HOUR, 0, tzinfo=TZ))
     app.run_polling()
