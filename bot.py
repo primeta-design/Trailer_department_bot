@@ -1,4 +1,5 @@
-import os, re, json, base64, asyncio, logging
+import os, re, json, base64, asyncio, logging, time
+from collections import deque
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
@@ -7,7 +8,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from telegram import (Update, BotCommand, BotCommandScopeChatMember, BotCommandScopeChat,
                       BotCommandScopeAllGroupChats, ForceReply, ReplyKeyboardRemove)
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, ChatMemberHandler, CommandHandler, MessageHandler, ContextTypes, filters
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)   # token URL loglarga tushmasin
@@ -108,7 +109,7 @@ async def cmd_lot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
         return
     if not update.effective_user or update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("This command is only available to the admin.")
+        await update.message.reply_text("This command is only available to the owner.")
         return
     try:
         await send_lot(context.bot, empty_note="No late trailers.")
@@ -196,7 +197,7 @@ async def cmd_dropped(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
         return
     if not update.effective_user or update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("This command is only available to the admin.")
+        await update.message.reply_text("This command is only available to the owner.")
         return
     try:
         await send_dropped(context.bot, empty_note="No dropped trailers are due.")
@@ -456,7 +457,7 @@ async def on_driver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     # Driver guruhlarida faqat OWNER buyruq bera oladi
     if not user or user.id != OWNER_ID:
-        await msg.reply_text("This command is only available to the admin.")
+        await msg.reply_text("This command is only available to the owner.")
         return
     text = " ".join(re.sub(r"@\w+", " ", msg.text or "").split())
     if re.fullmatch(r"/trailer", text, re.I):
@@ -520,6 +521,92 @@ async def on_driver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await msg.reply_text("I could not read that. Send /trailer to get the template.")
 
+# ---------- Owner'ga xabarlar: guruhga qo'shilish va shaxsiy yozishmalar ----------
+async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bot guruhga qo'shilsa yoki chiqarilsa, owner'ga shaxsiy xabar yuboradi (bot guruhdan chiqib ketmaydi)."""
+    cm = update.my_chat_member
+    if not cm or not OWNER_ID or cm.chat.type not in ("group", "supergroup"):
+        return
+    present = ("member", "administrator")
+    old, new = cm.old_chat_member.status, cm.new_chat_member.status
+    added = old in ("left", "kicked") and new in present
+    removed = old in present and new in ("left", "kicked")
+    who = cm.from_user
+    if not (added or removed) or who.id == OWNER_ID:
+        return
+    name = " ".join(x for x in (who.first_name, who.last_name) if x) or "Unknown"
+    uname = f" (@{who.username})" if who.username else ""
+    text = (f"{'➕ Bot was ADDED to a group' if added else '➖ Bot was REMOVED from a group'}\n"
+            f"Group: {cm.chat.title}\nGroup ID: {cm.chat.id}\n"
+            f"By: {name}{uname}\nUser ID: {who.id}")
+    try:
+        await context.bot.send_message(OWNER_ID, text)
+    except Exception:
+        log.exception("Could not notify owner about chat member change")
+
+
+RELAY = {}          # owner chatidagi xabar id -> foydalanuvchi chat id
+_hits = {}          # spamdan himoya: foydalanuvchi -> vaqtlar
+
+def _remember(mid, uid):
+    RELAY[mid] = uid
+    if len(RELAY) > 2000:
+        RELAY.pop(next(iter(RELAY)))
+
+def _allow(uid, limit=10, window=60):
+    now = time.time()
+    q = _hits.setdefault(uid, deque())
+    while q and now - q[0] > window:
+        q.popleft()
+    if len(q) >= limit:
+        return False
+    q.append(now)
+    return True
+
+async def relay_in(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Botga shaxsiy yozgan hamma narsa owner'ga keladi."""
+    msg, user = update.effective_message, update.effective_user
+    if not msg or not user or user.is_bot or not _allow(user.id):
+        return
+    name = " ".join(x for x in (user.first_name, user.last_name) if x) or "Unknown"
+    uname = f" (@{user.username})" if user.username else ""
+    head = f"👤 {name}{uname}\nID: {user.id}"
+    try:
+        if msg.text:
+            sent = await context.bot.send_message(OWNER_ID, f"{head}\n\n{msg.text[:3500]}")
+            _remember(sent.message_id, user.id)
+        else:
+            h = await context.bot.send_message(OWNER_ID, head + "\n(media message below)")
+            c = await context.bot.copy_message(OWNER_ID, user.id, msg.message_id)
+            _remember(h.message_id, user.id)
+            _remember(c.message_id, user.id)
+        if msg.text and msg.text.strip().lower().startswith("/start"):
+            await msg.reply_text("Hello! Send your message here and it will be passed to the owner.")
+    except Exception:
+        log.exception("relay_in failed")
+
+async def relay_out(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner botning xabariga reply qilsa, javob o'sha odamga boradi."""
+    msg = update.effective_message
+    prev = msg.reply_to_message
+    if not prev or not prev.from_user or prev.from_user.id != context.bot.id:
+        await msg.reply_text("Reply to a user's message to answer them.")
+        return
+    target = RELAY.get(prev.message_id)
+    if not target:
+        m = re.search(r"^ID: (\d+)$", prev.text or "", re.M)     # bot qayta ishga tushgandan keyin ham ishlaydi
+        target = int(m.group(1)) if m else None
+    if not target:
+        await msg.reply_text("I could not tell who this is for. Reply to the message that has the user's ID.")
+        return
+    try:
+        await context.bot.copy_message(target, msg.chat_id, msg.message_id)
+        await msg.reply_text("✅ Sent")
+    except Exception:
+        log.exception("relay_out failed")
+        await msg.reply_text("⚠️ Could not deliver (the user may have blocked the bot).")
+
+
 async def post_init(app: Application):
     bot = app.bot
     try:
@@ -554,6 +641,11 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, on_lookup_reply))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(DRV_START), on_driver_cmd), group=1)
     app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, on_report_edit), group=2)
+    app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER), group=1)
+    if OWNER_ID:
+        priv = filters.ChatType.PRIVATE & ~filters.StatusUpdate.ALL
+        app.add_handler(MessageHandler(priv & ~filters.User(user_id=OWNER_ID), relay_in), group=3)
+        app.add_handler(MessageHandler(priv & filters.User(user_id=OWNER_ID) & filters.REPLY, relay_out), group=3)
     app.job_queue.run_daily(lot_job, time=dtime(LOT_HOUR, 0, tzinfo=TZ))
     app.job_queue.run_daily(dropped_job, time=dtime(DROPPED_HOUR, 0, tzinfo=TZ))
     app.run_polling()
