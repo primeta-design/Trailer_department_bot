@@ -1,4 +1,4 @@
-import os, re, json, asyncio, logging
+import os, re, json, base64, asyncio, logging
 from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
@@ -15,7 +15,17 @@ log = logging.getLogger("fleetbot")
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 GROUP_ID = int(os.environ["GROUP_ID"])
 SHEET_ID = os.environ["SPREADSHEET_ID"]
-CREDS = json.loads(os.environ["GOOGLE_CREDS_JSON"])
+def _load_creds():
+    raw = os.getenv("GOOGLE_CREDS_JSON")
+    if raw:
+        return json.loads(raw)
+    for name in ("GOOGLE_SERVICE_ACCOUNT_KEY_BASE64", "GOOGLE_CREDENTIALS_B64"):
+        b64 = os.getenv(name)
+        if b64:
+            return json.loads(base64.b64decode(b64).decode("utf-8"))
+    raise RuntimeError("Google credentials variable is missing")
+
+CREDS = _load_creds()
 
 TZ = ZoneInfo("America/Chicago")
 LOT_HOUR, DROPPED_HOUR = 8, 9
