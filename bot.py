@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 import gspread
 from google.oauth2.service_account import Credentials
-from telegram import Update, BotCommand, ForceReply
+from telegram import Update, BotCommand, BotCommandScopeChatMember, ForceReply, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -15,6 +15,7 @@ log = logging.getLogger("fleetbot")
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 GROUP_ID = int(os.environ["GROUP_ID"])
 SHEET_ID = os.environ["SPREADSHEET_ID"]
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))   # /lot_trailers va /dropped faqat shu akkaunt uchun
 def _parse_creds(value):
     v = value.strip().strip('"').strip("'")
     if v.startswith("{"):
@@ -93,6 +94,9 @@ async def lot_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_lot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
+        return
+    if not update.effective_user or update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("This command is only available to the admin.")
         return
     try:
         await send_lot(context.bot, empty_note="No late trailers.")
@@ -175,6 +179,9 @@ async def dropped_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_dropped(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
+        return
+    if not update.effective_user or update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("This command is only available to the admin.")
         return
     try:
         await send_dropped(context.bot, empty_note="No dropped trailers are due.")
@@ -260,7 +267,7 @@ async def on_lookup_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     query = " ".join(re.sub(r"@\w+", " ", msg.text or "").split())
     if not query or len(query) > 40:
-        await msg.reply_text("Please enter a valid unit number.")
+        await msg.reply_text("Please enter a valid unit number.", reply_markup=ReplyKeyboardRemove(selective=True))
         return
     try:
         found = await asyncio.to_thread(lookup_sync, kind, query)
@@ -272,20 +279,29 @@ async def on_lookup_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(
             "The truck is not using Repower trailer or company rented trailer"
             if kind == "truck" else
-            "This trailer is not found in Repower or company rented trailers")
+            "This trailer is not found in Repower or company rented trailers", reply_markup=ReplyKeyboardRemove(selective=True))
         return
     await msg.reply_text("\n\n".join(
-        f"Truck unit: {tk}\nTrailer unit: {tr}\n({src})" for tr, tk, src in found))
+        f"Truck unit: {tk}\nTrailer unit: {tr}\n({src})" for tr, tk, src in found), reply_markup=ReplyKeyboardRemove(selective=True))
 
 
 async def post_init(app: Application):
-    # "/" bosilganda chiqadigan menyu
+    # "/" bosilganda chiqadigan menyu: hamma uchun
     await app.bot.set_my_commands([
-        BotCommand("lot_trailers", "Late LOT trailers list"),
-        BotCommand("dropped", "Dropped trailers due list"),
         BotCommand("truck_unit", "Find trailer by truck unit"),
         BotCommand("trailer_unit", "Find truck by trailer unit"),
     ])
+    # faqat admin uchun to'liq menyu
+    if OWNER_ID:
+        try:
+            await app.bot.set_my_commands([
+                BotCommand("lot_trailers", "Late LOT trailers list"),
+                BotCommand("dropped", "Dropped trailers due list"),
+                BotCommand("truck_unit", "Find trailer by truck unit"),
+                BotCommand("trailer_unit", "Find truck by trailer unit"),
+            ], scope=BotCommandScopeChatMember(chat_id=GROUP_ID, user_id=OWNER_ID))
+        except Exception:
+            log.exception("Could not set admin command menu")
 
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
