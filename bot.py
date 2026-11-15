@@ -298,21 +298,26 @@ async def on_lookup_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- Drivers guruhlari (FAQAT OWNER): pick up / drop off / update chat ----------
 TITLE_RE = re.compile(r"#\s*([A-Za-z0-9-]+)(?:\s+(.+))?")          # zaxira: "Rawdeal #721 Driver Name"
 DRV_START = re.compile(r"^/(trailer(?!_unit)|update[ _]?chat)", re.I)
-DATE_PART = r"(?:\s+date\s*:?\s*(?P<date>\d{1,2}/\d{1,2}/\d{2,4}))?$"
+DATE_PART = r"(?:\s+date\s*:?\s*(?P<date>\d{1,2}/\d{1,2}/\d{2,4})?)?$"
 PICK_RE = re.compile(r"^/trailer[ _]?unit\s*:?\s*(?P<unit>[A-Za-z0-9-]+)\s+pick(?:ed)?[ -]?up\s+location\s*:?\s*(?P<loc>.+?)" + DATE_PART, re.I)
 DROP_RE = re.compile(r"^/trailer(?:[ _]?unit\s*:?\s*(?P<unit>[A-Za-z0-9-]+))?\s*drop(?:ped)?[ -]?off\s+location\s*:?\s*(?P<loc>.+?)" + DATE_PART, re.I)
 UPDATE_RE = re.compile(r"^/update[ _]?chat$", re.I)
 LINE = "====================="
 
-DRV_USAGE = (
-    "Usage:\n"
-    "/trailer unit 5624473\n"
-    "picked up location : 10560 C F Hawn Fwy, Dallas, TX 75217, USA\n"
-    "date : 11/08/2026   (optional)\n\n"
-    "/trailer drop off location : 10560 C F Hawn Fwy, Dallas, TX 75217\n"
-    "date : 11/08/2026   (optional)\n\n"
-    "/update chat"
+TEMPLATE = (
+    "/trailer unit \npicked up location : \ndate : \n\n"
+    "/trailer drop off location : \ndate : "
 )
+
+async def cleanup_template(context, msg):
+    """Owner shablonga reply qilib yuborgan bo'lsa, botning shablon xabarini o'chiradi."""
+    prev = msg.reply_to_message
+    if (prev and prev.from_user and prev.from_user.id == context.bot.id
+            and (prev.text or "").startswith("/trailer unit") and "drop off location" in (prev.text or "")):
+        try:
+            await context.bot.delete_message(prev.chat_id, prev.message_id)
+        except Exception:
+            log.warning("Could not delete template message in chat %s", prev.chat_id)
 
 def valid_date(s):
     try:
@@ -421,12 +426,16 @@ async def on_driver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Driver guruhlarida faqat OWNER buyruq bera oladi; boshqalarga javob ham berilmaydi
     if not user or user.id != OWNER_ID:
         return
+    text = " ".join(re.sub(r"@\w+", " ", msg.text or "").split())
+    if re.fullmatch(r"/trailer", text, re.I):
+        await msg.reply_text(TEMPLATE, reply_markup=ForceReply(
+            selective=True, input_field_placeholder="Copy, fill in and send"))
+        return
     truck, driver = await parse_title(chat.title or "")
     if not truck:
         await msg.reply_text("I could not read the truck unit from the group name.")
         return
     driver = driver or "N/A"
-    text = " ".join(re.sub(r"@\w+", " ", msg.text or "").split())
 
     try:
         if UPDATE_RE.match(text):
@@ -446,6 +455,7 @@ async def on_driver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             await context.bot.send_message(chat.id, driver_report(unit, truck, driver, "Pick up", loc, date))
             await send_and_pin(context.bot, chat.id, f"#Truck {truck}\n#Trailer {unit}")
+            await cleanup_template(context, msg)
             return
 
         m = DROP_RE.match(text)
@@ -468,13 +478,15 @@ async def on_driver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
                 unit = trailers[0]
             await context.bot.send_message(chat.id, driver_report(unit, truck, driver, "Drop off", loc, date))
+            await send_and_pin(context.bot, chat.id, f"#Truck {truck}\nBobtail")
+            await cleanup_template(context, msg)
             return
     except Exception:
         log.exception("driver command failed")
         await msg.reply_text("⚠️ Something went wrong, please try again.")
         return
 
-    await msg.reply_text(DRV_USAGE)
+    await msg.reply_text("I could not read that. Send /trailer to get the template.")
 
 async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Botni owner'dan boshqa odam yangi guruhga qo'shsa, bot o'sha guruhdan chiqib ketadi."""
