@@ -17,8 +17,8 @@ log = logging.getLogger("fleetbot")
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 GROUP_ID = int(os.environ["GROUP_ID"])
 SHEET_ID = os.environ["SPREADSHEET_ID"]
-REPORT_GROUP_ID = int(os.getenv("REPORT_GROUP_ID", "0"))   # report'lar nusxasi tushadigan guruh (ixtiyoriy)
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))   # /lot_trailers, /dropped va driver guruhlaridagi buyruqlar faqat shu akkaunt uchun
+REPORT_GROUP_ID = int(os.getenv("REPORT_GROUP_ID") or 0)   # report'lar nusxasi tushadigan guruh (ixtiyoriy)
+OWNER_ID = int(os.getenv("OWNER_ID") or 0)   # /lot_trailers, /dropped va driver guruhlaridagi buyruqlar faqat shu akkaunt uchun
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")   # guruh nomidan truck/driver o'qish uchun (ixtiyoriy)
 AI_MODEL = os.getenv("AI_MODEL", "claude-haiku-5-5")
 
@@ -108,7 +108,7 @@ async def cmd_lot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
         return
     if not update.effective_user or update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("This command is only available to the admin.")
+        await update.message.reply_text("This command is only available to the owner.")
         return
     try:
         await send_lot(context.bot, empty_note="No late trailers.")
@@ -196,7 +196,7 @@ async def cmd_dropped(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
         return
     if not update.effective_user or update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("This command is only available to the admin.")
+        await update.message.reply_text("This command is only available to the owner.")
         return
     try:
         await send_dropped(context.bot, empty_note="No dropped trailers are due.")
@@ -454,8 +454,9 @@ async def on_driver_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg, chat, user = update.effective_message, update.effective_chat, update.effective_user
     if not msg or not chat or chat.id == GROUP_ID or chat.id == REPORT_GROUP_ID or chat.type not in ("group", "supergroup"):
         return
-    # Driver guruhlarida faqat OWNER buyruq bera oladi; boshqalarga javob ham berilmaydi
+    # Driver guruhlarida faqat OWNER buyruq bera oladi
     if not user or user.id != OWNER_ID:
+        await msg.reply_text("This command is only available to the owner.")
         return
     text = " ".join(re.sub(r"@\w+", " ", msg.text or "").split())
     if re.fullmatch(r"/trailer", text, re.I):
