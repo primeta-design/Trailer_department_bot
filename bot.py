@@ -15,15 +15,21 @@ log = logging.getLogger("fleetbot")
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 GROUP_ID = int(os.environ["GROUP_ID"])
 SHEET_ID = os.environ["SPREADSHEET_ID"]
+def _parse_creds(value):
+    v = value.strip().strip('"').strip("'")
+    if v.startswith("{"):
+        return json.loads(v)                       # oddiy JSON
+    return json.loads(base64.b64decode(v).decode("utf-8"))   # base64
+
 def _load_creds():
-    raw = os.getenv("GOOGLE_CREDS_JSON")
-    if raw:
-        return json.loads(raw)
-    for name in ("GOOGLE_SERVICE_ACCOUNT_KEY_BASE64", "GOOGLE_CREDENTIALS_B64"):
-        b64 = os.getenv(name)
-        if b64:
-            return json.loads(base64.b64decode(b64).decode("utf-8"))
-    raise RuntimeError("Google credentials variable is missing")
+    for name in ("GOOGLE_CREDS_JSON", "GOOGLE_SERVICE_ACCOUNT_KEY_BASE64", "GOOGLE_CREDENTIALS_B64"):
+        v = os.getenv(name)
+        if v and v.strip():
+            try:
+                return _parse_creds(v)
+            except Exception:
+                log.error("Variable %s is set but could not be parsed", name)
+    raise RuntimeError("No valid Google credentials variable found")
 
 CREDS = _load_creds()
 
