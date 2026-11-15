@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 import gspread
 from google.oauth2.service_account import Credentials
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, ForceReply
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -133,6 +133,15 @@ def dropped_items():
     items.sort(key=lambda x: x[0])
     return items
 
+def assign_line(r):
+    who = col(r, "R")
+    if not who:
+        return ""
+    if not who.startswith("@"):
+        who = "@" + who
+    return (f"    {who} Brother, what’s the plan for the trailer? Are we picking it up soon, "
+            f"or should we extend the parking? Please check with Mr @Fleeet_Nate.\n")
+
 def dropped_text(items):
     parts = ["The Trailers at the parking:\n"]
     for n, (_, icon, r) in enumerate(items, 1):
@@ -142,6 +151,7 @@ def dropped_text(items):
             f"    Dropped date: {col(r,'K')}\n"
             f"    Paid until: {col(r,'O')}\n"
             f"    Location: {col(r,'S')}\n"
+            f"{assign_line(r)}"
         )
     return "\n".join(parts)
 
@@ -208,8 +218,49 @@ async def on_lookup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not m:
         return
     kind, query = m.group(1).lower(), m.group(2).strip()
-    if not query or len(query) > 40:
+    if not query:
+        await msg.reply_text(
+            f"Enter the {kind} unit number:",
+            reply_markup=ForceReply(selective=True, input_field_placeholder=f"{kind.capitalize()} unit number"))
+        return
+    if len(query) > 40:
         await msg.reply_text(f"Please enter a unit number, for example:\n/{kind}_unit : 4558")
+        return
+    if f"@{context.bot.username}".lower() not in (msg.text or "").lower():
+        await msg.reply_text(
+            f"Please write it in this format:\n/{kind}_unit : 4558\n@{context.bot.username}")
+        return
+    try:
+        found = await asyncio.to_thread(lookup_sync, kind, query)
+    except Exception:
+        log.exception("lookup failed")
+        await msg.reply_text("⚠️ Sheet could not be read.")
+        return
+    if not found:
+        await msg.reply_text(
+            "The truck is not using Repower trailer or company rented trailer"
+            if kind == "truck" else
+            "This trailer is not found in Repower or company rented trailers")
+        return
+    await msg.reply_text("\n\n".join(
+        f"Truck unit: {tk}\nTrailer unit: {tr}\n({src})" for tr, tk, src in found))
+
+
+PROMPTS = {"Enter the truck unit number:": "truck", "Enter the trailer unit number:": "trailer"}
+
+async def on_lookup_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not msg or update.effective_chat.id != GROUP_ID:
+        return
+    prev = msg.reply_to_message
+    if not prev or not prev.from_user or prev.from_user.id != context.bot.id:
+        return
+    kind = PROMPTS.get((prev.text or "").strip())
+    if not kind:
+        return
+    query = " ".join(re.sub(r"@\w+", " ", msg.text or "").split())
+    if not query or len(query) > 40:
+        await msg.reply_text("Please enter a valid unit number.")
         return
     try:
         found = await asyncio.to_thread(lookup_sync, kind, query)
@@ -241,6 +292,7 @@ def main():
     app.add_handler(CommandHandler("lot_trailers", cmd_lot))
     app.add_handler(CommandHandler("dropped", cmd_dropped))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(LOOKUP_START), on_lookup))
+    app.add_handler(MessageHandler(filters.TEXT & filters.REPLY & ~filters.COMMAND, on_lookup_reply))
     app.job_queue.run_daily(lot_job, time=dtime(LOT_HOUR, 0, tzinfo=TZ))
     app.job_queue.run_daily(dropped_job, time=dtime(DROPPED_HOUR, 0, tzinfo=TZ))
     app.run_polling()
