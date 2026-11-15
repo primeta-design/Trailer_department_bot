@@ -65,16 +65,22 @@ def read_block(tab, key_col="B"):
 
 # ---------- LOT TRAILERS: N = Late bo'lsa har kuni 8:00 ----------
 def lot_late_rows():
-    return [r for r in read_block(TAB_LOT) if col(r, "N").lower() == "late"]
+    return [r for r in read_block(TAB_LOT) if col(r, "L").lower() == "late"]
 
 def lot_msg(r):
-    return (
-        f"Reservation ID: {col(r,'C')}\n\n"
-        f"Truck unit: {col(r,'F')}\n"
-        f"Trailer unit: {col(r,'B')}\n\n"
-        f"Return date: {col(r,'K')}\n"
-        f"Return location: {col(r,'L')}"
+    who = col(r, "F")
+    text = (
+        f"Reservation ID: {col(r,'C')}\n"
+        f"Truck Unit: {col(r,'E')}\n"
+        f"Trailer Unit: {col(r,'B')}\n"
+        f"Return Date: {col(r,'I')}\n"
+        f"Return Location: {col(r,'J')}"
     )
+    if who and who.lower() not in ("n/a", "na", "-"):
+        if not who.startswith("@"):
+            who = "@" + who
+        text += f"\n\n{who} Please be informed. The return date is approaching."
+    return text
 
 async def send_lot(bot, empty_note=None):
     rows = await asyncio.to_thread(lot_late_rows)
@@ -143,21 +149,24 @@ def assign_line(r):
         return ""
     if not who.startswith("@"):
         who = "@" + who
-    return (f"    {who} Brother, what’s the plan for the trailer? Are we picking it up soon, "
-            f"or should we extend the parking? Please check with Mr @Fleeet_Nate.\n")
+    return f"{who} pls be informed.\n"
+
+DROPPED_FOOTER = ("-------------------------------\n"
+                  "Team what’s the plan for the trailer? Are we picking it up soon, "
+                  "or should we extend the parking? Please check with Mr @Fleeet_Nate.")
 
 def dropped_text(items):
     parts = ["The Trailers at the parking:\n"]
     for n, (_, icon, r) in enumerate(items, 1):
         parts.append(
             f"{n}. {icon} Trailer unit: {col(r,'B')}\n"
-            f"    Truck unit: {col(r,'G')}\n"
-            f"    Dropped date: {col(r,'K')}\n"
-            f"    Paid until: {col(r,'O')}\n"
-            f"    Location: {col(r,'S')}\n"
+            f"Truck unit: {col(r,'G')}\n"
+            f"Dropped date: {col(r,'K')}\n"
+            f"Paid until: {col(r,'O')}\n"
+            f"Location: {col(r,'S')}\n"
             f"{assign_line(r)}"
         )
-    return "\n".join(parts)
+    return "\n".join(parts).rstrip("\n") + "\n" + DROPPED_FOOTER
 
 async def send_dropped(bot, empty_note=None):
     items = await asyncio.to_thread(dropped_items)
@@ -193,7 +202,7 @@ async def cmd_dropped(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- Truck <-> Trailer qidiruv ----------
 def toks(s):
     t = re.findall(r"[A-Za-z0-9]+", (s or "").lower())
-    return {(x.lstrip("0") or "0") if x.isdigit() else x for x in t}
+    return set(t)
 
 def matches(query, cell):
     q = toks(query.replace(" ", ""))
@@ -202,7 +211,7 @@ def matches(query, cell):
 def lookup_sync(kind, query):
     found = []
     for r in read_block(TAB_LOT):
-        trailer, truck = col(r, "B"), col(r, "F")
+        trailer, truck = col(r, "B"), col(r, "E")
         if matches(query, truck if kind == "truck" else trailer):
             found.append((trailer, truck, "Repower"))
     for r in read_block(TAB_TRL):
