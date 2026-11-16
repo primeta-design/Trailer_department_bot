@@ -488,8 +488,7 @@ async def send_and_pin(bot, chat_id, text):
     try:
         await bot.pin_chat_message(chat_id, m.message_id, disable_notification=True)
     except Exception:
-        log.warning("Could not pin in chat %s", chat_id)
-        await bot.send_message(chat_id, "⚠️ I could not pin the message. Please make me an admin with the 'Pin messages' permission.")
+        log.warning("Could not pin in chat %s", chat_id)     # guruhga xabar yozilmaydi
 
 def driver_report(unit, truck, driver, kind, loc, date=None):
     if not date:
